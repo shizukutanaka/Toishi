@@ -1,0 +1,17 @@
+[package]
+name = "toishi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Local-first Rust CLI that mines verified human git commits and distills recurring change patterns into Agent Skills (SKILL.md)."
+homepage = "https://github.com/shizukutanaka/Toishi"
+repository = "https://github.com/shizukutanaka/Toishi"
+readme = "README.md"
+keywords = ["agent-skills", "git", "mining", "cli"]
+categories = ["command-line-utilities"]
+
+# Zero-dependency by design: the standard library is the entire supply chain.
+[dependencies]
+
+[profile.release]
+opt-level = 3
