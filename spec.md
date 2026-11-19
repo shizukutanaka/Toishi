@@ -38,6 +38,10 @@ Commit metadata is `%H` (hash), `%ct` (committer time, Unix seconds), and
 cannot appear in a subject. Only fix/feat commits (see §2.1) have their
 diffs collected.
 
+Git output is decoded as UTF-8 lossily: bytes that are not valid UTF-8
+(files in Latin-1, Shift_JIS, ...) become U+FFFD instead of aborting the
+run. The mapping is deterministic, so §6 still holds.
+
 ## 2. Pipeline
 
 ### 2.1 classify
