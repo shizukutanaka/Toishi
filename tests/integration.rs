@@ -235,3 +235,33 @@ fn usage_errors_exit_2() {
         .unwrap();
     assert_eq!(result.status.code(), Some(2));
 }
+
+#[test]
+fn non_utf8_diff_does_not_abort_mining() {
+    let base = temp_dir("latin1");
+    let repo = base.join("repo");
+    build_pattern_repo(&repo);
+
+    // A legacy-encoded (Latin-1) file: its diff is not valid UTF-8.
+    fs::write(repo.join("legacy.txt"), b"caf\xe9 = 1\n").unwrap();
+    commit_all(&repo, "fix: legacy encoding file", "2026-01-05T00:00:00Z");
+
+    let out = base.join("out");
+    let result = run_mine(&repo, &out, &[]);
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    assert!(stdout.contains("scanned 5 commits"), "stdout: {stdout}");
+    assert!(stdout.contains("emitted 1 skill(s)"), "stdout: {stdout}");
+
+    // Lossy decoding is deterministic: a second run is byte-identical.
+    let out2 = base.join("out2");
+    assert!(run_mine(&repo, &out2, &[]).status.success());
+    assert_eq!(read_tree(&out), read_tree(&out2));
+
+    fs::remove_dir_all(&base).ok();
+}
