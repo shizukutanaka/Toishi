@@ -60,6 +60,9 @@ toishi mine --repo ~/src/app-one --repo ~/src/app-two --out ./toishi-out
 
 # Show what was mined
 toishi list [--out <dir>]
+
+# Reproduce one generated skill from the recorded commits (read-only)
+toishi verify <skill> --repo <path> [--repo <path> ...] [--out <dir>]
 ```
 
 Output layout:
@@ -69,7 +72,8 @@ toishi-out/
 ├── registry.jsonl            # one record per skill
 ├── rejected.jsonl            # gate rejections with reasons (if any)
 └── <skill-name>/
-    └── SKILL.md              # frontmatter (name, description) + pattern body
+    ├── SKILL.md              # frontmatter (name, description) + pattern body
+    └── sources.txt           # complete set of source commit IDs for replay
 ```
 
 Each `SKILL.md` carries a trigger-rich description (built from the
@@ -83,6 +87,13 @@ duplicate checkouts do not inflate support. Combined skills show full commit
 IDs instead of shortened IDs, without embedding local repository paths.
 Reordering the same inputs produces identical artifacts. Select only
 repositories whose change patterns you intend to combine and review together.
+
+`verify` uses the complete list in `sources.txt`, including sources
+omitted from the readable skill summary. Supply local repositories that
+together contain the recorded commits. Verification checks that the
+on-disk `SKILL.md` matches a fresh replay without changing any files;
+it does not establish that the skill is safe, signed, or applicable to
+the current checkout. Older outputs without `sources.txt` need re-mining.
 
 ### Zero skills is a valid result
 
@@ -139,13 +150,13 @@ found 18 distinct change patterns; 0 met support >= 3
 - **Classification is heuristic** outside Conventional Commits repos
   (EN/JA keyword fallback).
 - **Confidence is a frequency prior** (`support / (support + 2)`) in
-  v0.1; decay/re-verification arrive in later versions.
+  v0.1; source replay does not change the confidence score.
 
 ## Roadmap
 
 - **v0.1.x** — Claude Code plugin + PostToolUse/Stop hook distribution;
   event-driven staleness (dependency major bumps).
-- **v0.2** — cross-repository mining (implemented); `verify` subcommand; tree-sitter
+- **v0.2** — cross-repository mining and `verify` (implemented); tree-sitter
   AST diffs; optional, explicitly-labeled local-LLM description
   refinement (deterministic core remains the default).
 

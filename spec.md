@@ -98,8 +98,11 @@ accepted by design:
 
 ### 2.4 emit
 
-Each surviving candidate produces `<out>/<name>/SKILL.md` and one
-`registry.jsonl` record.
+Each surviving candidate produces `<out>/<name>/SKILL.md`, a sibling
+`sources.txt` manifest, and one `registry.jsonl` record. The manifest contains
+`toishi-sources-v1 short` or `toishi-sources-v1 full` on the first line
+(the display mode for commit IDs in `SKILL.md`), then every full source commit
+ID in ascending order, one per line.
 
 - `name`: slug of the cluster's imperative phrase (see below); lowercase
   ASCII letters/digits/hyphens, ≤ 64 chars, identical to the directory
@@ -143,8 +146,8 @@ printed in the run report.
   start at 0. The formula is deterministic and documented here; it is a
   frequency prior, nothing more.
 - **Not in v0.1** (planned, v0.1.x/v0.2): time-based decay and
-  re-verification (a `verify` subcommand), and event-driven
-  invalidation.
+  event-driven invalidation. Source replay (`verify`) does not update
+  confidence or `last_verified`.
 
 Design note (review H-4): FSRS-style forgetting curves model human
 memory, whose decay is continuous. Code-pattern staleness is instead
@@ -194,6 +197,7 @@ silently.
 ```
 toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]
 toishi list [--out <dir>]
+toishi verify <skill> --repo <path> [--repo <path> ...] [--out <dir>]
 ```
 
 `--out` defaults to `toishi-out`. `list` reads `<out>/registry.jsonl`
@@ -202,10 +206,19 @@ and prints the recorded skills.
 When mining multiple repository paths, source references in `SKILL.md`
 use full commit IDs. Repository paths are not embedded in the artifacts.
 
+`verify` resolves the manifest's IDs against the supplied local Git
+object databases, not the current branch tip. It re-clusters only those
+commits, requires every one to contribute to a single pattern, applies
+the normal security gate, and compares the regenerated `SKILL.md`
+byte-for-byte for the selected name. It does not run the skill or write
+output. Missing manifests, missing commit objects and mismatches are
+errors, not successful checks. Replay is a reproducibility check, not
+proof of source trust or current applicability.
+
 | Exit code | Meaning |
 |---|---|
 | 0 | Success — including a zero-skill result (reason is printed) |
-| 1 | Runtime error (repository unreadable, git failure, I/O failure) |
+| 1 | Runtime error (repository unreadable, git failure, I/O failure, or unsuccessful verification) |
 | 2 | Usage error (unknown/malformed arguments) |
 | 3 | Candidates existed but the security gate rejected **all** of them |
 
@@ -253,8 +266,8 @@ it emits files for the owner to review and adopt.
 ## 9. Roadmap (post-v0.1)
 
 - v0.1.x: plugin/hook distribution; event-driven invalidation.
-- v0.2: cross-repository mining (implemented); `verify` subcommand (replay a skill
-  against its source commits); tree-sitter AST diffs (line diffs break
+- v0.2: cross-repository mining and source replay with `verify` (implemented);
+  tree-sitter AST diffs (line diffs break
   under identifier renames and code motion — review H-1); optional,
   explicitly-labeled local-LLM description refinement (the deterministic
   core stays the default).

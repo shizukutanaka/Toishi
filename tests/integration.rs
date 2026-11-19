@@ -109,6 +109,17 @@ fn run_mine(repo: &Path, out: &Path, extra: &[&str]) -> std::process::Output {
         .expect("toishi should run")
 }
 
+fn run_verify(out: &Path, repos: &[&Path]) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_toishi"));
+    command
+        .args(["verify", "raise-timeout-and-retries", "--out"])
+        .arg(out);
+    for repo in repos {
+        command.arg("--repo").arg(repo);
+    }
+    command.output().expect("toishi should run")
+}
+
 fn temp_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("toishi-it-{tag}-{}", std::process::id()));
     if dir.exists() {
@@ -174,6 +185,49 @@ fn mines_a_skill_and_is_deterministic() {
         "list: {list_out}"
     );
 
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn verifies_recorded_sources_without_requiring_them_on_head() {
+    let base = temp_dir("verify");
+    let repo = base.join("repo");
+    build_pattern_repo(&repo);
+    let out = base.join("out");
+    let result = run_mine(&repo, &out, &[]);
+    assert!(result.status.success(), "{result:?}");
+    let original = read_tree(&out);
+
+    git(
+        &repo,
+        &["switch", "--detach", "HEAD~3"],
+        "2026-01-05T00:00:00Z",
+    );
+    let replay = run_verify(&out, &[&repo]);
+    assert!(replay.status.success(), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stdout)
+        .contains("reproduced SKILL.md from 3 source commits"));
+    assert_eq!(original, read_tree(&out));
+
+    let skill_dir = out.join("raise-timeout-and-retries");
+    write(&skill_dir, "SKILL.md", "edited skill\n");
+    let replay = run_verify(&out, &[&repo]);
+    assert_eq!(replay.status.code(), Some(1), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("does not match"));
+
+    write(
+        &skill_dir,
+        "sources.txt",
+        "toishi-sources-v1 short\n--all\n",
+    );
+    let replay = run_verify(&out, &[&repo]);
+    assert_eq!(replay.status.code(), Some(1), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("invalid source manifest"));
+
+    fs::remove_file(skill_dir.join("sources.txt")).unwrap();
+    let replay = run_verify(&out, &[&repo]);
+    assert_eq!(replay.status.code(), Some(1), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("re-mine"));
     fs::remove_dir_all(&base).ok();
 }
 
@@ -274,6 +328,13 @@ fn mines_across_repositories_without_counting_shared_history_twice() {
     );
     assert!(result.status.success(), "{result:?}");
     assert_eq!(read_tree(&out), read_tree(&reverse));
+    let replay = run_verify(&out, &[&second, &repo]);
+    assert!(replay.status.success(), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stdout)
+        .contains("reproduced SKILL.md from 5 source commits"));
+    let replay = run_verify(&out, &[&repo]);
+    assert_eq!(replay.status.code(), Some(1), "{replay:?}");
+    assert!(String::from_utf8_lossy(&replay.stderr).contains("not found in supplied repositories"));
     fs::remove_dir_all(&base).ok();
 }
 
