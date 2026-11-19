@@ -1,7 +1,7 @@
 //! Toishi CLI.
 //!
 //! Subcommands:
-//! - `toishi mine --repo <path> [--out <dir>] [--support <n>]`
+//! - `toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]`
 //! - `toishi list [--out <dir>]`
 //!
 //! Exit codes (spec §5):
@@ -11,13 +11,13 @@
 //! - 2: usage error (unknown or malformed arguments).
 //! - 3: candidates existed but the security gate rejected all of them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use toishi::classify::Category;
 use toishi::cluster::{self, DEFAULT_SUPPORT};
-use toishi::{collect, emit, normalize, sanitize, CommitPattern, NormLine};
+use toishi::{collect, emit, normalize, sanitize, Commit, CommitPattern, NormLine};
 
 const DEFAULT_OUT: &str = "toishi-out";
 
@@ -25,16 +25,16 @@ const USAGE: &str = "\
 Toishi — mine verified human git commits into Agent Skills.
 
 USAGE:
-    toishi mine --repo <path> [--out <dir>] [--support <n>]
+    toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]
     toishi list [--out <dir>]
     toishi --help
 
 COMMANDS:
-    mine    Mine a repository and emit SKILL.md files + registry.jsonl.
+    mine    Mine local repositories and emit SKILL.md files + registry.jsonl.
     list    Show the skills recorded in <out>/registry.jsonl.
 
 OPTIONS:
-    --repo <path>    Repository to mine (required for `mine`).
+    --repo <path>    Local repository to mine (required for `mine`, repeatable).
     --out <dir>      Output directory (default: toishi-out).
     --support <n>    Minimum commits per pattern (default: 3).
 
@@ -72,14 +72,14 @@ fn run(args: &[String]) -> u8 {
 
 /// Parsed options shared by subcommands.
 struct Options {
-    repo: Option<PathBuf>,
+    repos: BTreeSet<PathBuf>,
     out: PathBuf,
     support: usize,
 }
 
 fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
     let mut opts = Options {
-        repo: None,
+        repos: BTreeSet::new(),
         out: PathBuf::from(DEFAULT_OUT),
         support: DEFAULT_SUPPORT,
     };
@@ -89,7 +89,7 @@ fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
             "--repo" => {
                 i += 1;
                 let value = args.get(i).ok_or("--repo requires a value")?;
-                opts.repo = Some(PathBuf::from(value));
+                opts.repos.insert(PathBuf::from(value));
             }
             "--out" => {
                 i += 1;
@@ -111,7 +111,7 @@ fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
         }
         i += 1;
     }
-    if need_repo && opts.repo.is_none() {
+    if need_repo && opts.repos.is_empty() {
         return Err("--repo is required for `mine`".to_string());
     }
     Ok(opts)
@@ -125,8 +125,7 @@ fn cmd_mine(args: &[String]) -> u8 {
             return 2;
         }
     };
-    let repo = opts.repo.as_deref().unwrap_or(Path::new("."));
-    match mine(repo, &opts.out, opts.support) {
+    match mine(&opts.repos, &opts.out, opts.support) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
@@ -136,8 +135,15 @@ fn cmd_mine(args: &[String]) -> u8 {
 }
 
 /// The mining pipeline. Returns the process exit code.
-fn mine(repo: &Path, out: &Path, support: usize) -> Result<u8, String> {
-    let commits = collect::collect(repo)?;
+fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, String> {
+    let mut unique = BTreeMap::<String, Commit>::new();
+    for repo in repos {
+        let history = collect::collect(repo).map_err(|err| format!("{}: {err}", repo.display()))?;
+        for commit in history {
+            unique.entry(commit.hash.clone()).or_insert(commit);
+        }
+    }
+    let commits: Vec<Commit> = unique.into_values().collect();
     let total = commits.len();
     let mineable: Vec<usize> = commits
         .iter()
@@ -183,7 +189,7 @@ fn mine(repo: &Path, out: &Path, support: usize) -> Result<u8, String> {
 
     let clusters = cluster::cluster(&patterns);
     let cands = cluster::candidates(&clusters, support);
-    let (skills, rejections) = emit::build_skills(&cands, &commits, &patterns);
+    let (skills, rejections) = emit::build_skills(&cands, &commits, &patterns, repos.len() > 1);
     emit::write_outputs(out, &skills, &rejections)?;
 
     // Report. Everything printed is derived from the repository and the
@@ -196,6 +202,12 @@ fn mine(repo: &Path, out: &Path, support: usize) -> Result<u8, String> {
         .iter()
         .filter(|c| c.category == Category::Feat)
         .count();
+    if repos.len() > 1 {
+        println!(
+            "mined a combined history of {} local repositories",
+            repos.len()
+        );
+    }
     println!(
         "scanned {total} commits ({fix_count} fix, {feat_count} feat, {} other)",
         total - fix_count - feat_count

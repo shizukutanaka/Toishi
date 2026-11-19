@@ -271,6 +271,7 @@ fn build_draft(
     cluster: &Cluster,
     commits: &[Commit],
     patterns_by_commit: &BTreeMap<usize, &CommitPattern>,
+    full_source_ids: bool,
 ) -> Draft {
     let members: Vec<&Commit> = cluster.members.iter().map(|&i| &commits[i]).collect();
     let patterns: Vec<&CommitPattern> = cluster
@@ -353,10 +354,18 @@ fn build_draft(
     });
     let shown = sources.len().min(6);
     for commit in sources.iter().take(shown) {
-        let short: String = commit.hash.chars().take(7).collect();
+        let hash = if full_source_ids {
+            commit.hash.as_str()
+        } else {
+            &commit.hash[..commit
+                .hash
+                .char_indices()
+                .nth(7)
+                .map_or(commit.hash.len(), |(i, _)| i)]
+        };
         let subject =
             crate::classify::strip_prefix(&crate::sanitize::sanitize_subject(&commit.subject));
-        body_lines.push(format!("- `{short}` {subject}"));
+        body_lines.push(format!("- `{hash}` {subject}"));
     }
     if sources.len() > shown {
         body_lines.push(format!("- … and {} more", sources.len() - shown));
@@ -409,6 +418,7 @@ pub fn build_skills(
     candidate_clusters: &[Cluster],
     commits: &[Commit],
     patterns: &[CommitPattern],
+    full_source_ids: bool,
 ) -> (Vec<SkillFile>, Vec<Rejection>) {
     let patterns_by_commit: BTreeMap<usize, &CommitPattern> =
         patterns.iter().map(|p| (p.commit_index, p)).collect();
@@ -417,7 +427,7 @@ pub fn build_skills(
     let mut used_names: Vec<String> = Vec::new();
 
     for cluster in candidate_clusters {
-        let draft = build_draft(cluster, commits, &patterns_by_commit);
+        let draft = build_draft(cluster, commits, &patterns_by_commit, full_source_ids);
         if let Some(reason) = gate_check(&draft, cluster, commits, &patterns_by_commit) {
             rejections.push(Rejection {
                 candidate: draft.base_name.clone(),
@@ -675,7 +685,7 @@ mod tests {
             representative: patterns[0].fingerprints.clone(),
             union: patterns[0].fingerprints.clone(),
         };
-        let (skills, rejections) = build_skills(&[cl], &commits, &patterns);
+        let (skills, rejections) = build_skills(&[cl], &commits, &patterns, false);
         assert!(rejections.is_empty());
         assert_eq!(skills.len(), 1);
         let skill = &skills[0];
@@ -726,7 +736,7 @@ mod tests {
             representative: patterns[0].fingerprints.clone(),
             union: patterns[0].fingerprints.clone(),
         };
-        let (skills, rejections) = build_skills(&[cl], &commits, &patterns);
+        let (skills, rejections) = build_skills(&[cl], &commits, &patterns, false);
         assert!(skills.is_empty());
         assert_eq!(rejections.len(), 1);
         assert!(rejections[0].reason.contains("blocklist"));

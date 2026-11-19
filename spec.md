@@ -91,8 +91,10 @@ accepted by design:
   parseable diff lines, or the largest pattern's support vs. the
   threshold (with a hint to lower `--support`).
 - The support threshold is user-configurable down to 1.
-- Cross-repository mining is the structural mitigation and is planned
-  for v0.2.
+- Cross-repository mining is the structural mitigation. Each explicit
+  `--repo` contributes its local HEAD history to a single corpus, deduplicated
+  by full commit ID before clustering. Input order does not affect artifacts.
+  An unreadable input aborts the entire run before writing output.
 
 ### 2.4 emit
 
@@ -113,8 +115,9 @@ Each surviving candidate produces `<out>/<name>/SKILL.md` and one
     rendered as `dir/**`.
 - body: ≤ 40 lines — pattern summary (support, last verified),
   representative normalized diff lines (most frequent first), trigger
-  hints, and source commits (short hash + sanitized subject, newest
-  first). Raw diff is never copied verbatim beyond the normalized,
+  hints, and source commits (short hash for one repository, full hash for
+  multiple repositories, plus sanitized subject; newest first).
+  Raw diff is never copied verbatim beyond the normalized,
   redacted representative lines.
 - `last_verified`: the newest **commit date inside the cluster** (UTC
   date of the maximum committer timestamp). Never the current time.
@@ -189,12 +192,15 @@ silently.
 ## 5. CLI and exit codes
 
 ```
-toishi mine --repo <path> [--out <dir>] [--support <n>]
+toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]
 toishi list [--out <dir>]
 ```
 
 `--out` defaults to `toishi-out`. `list` reads `<out>/registry.jsonl`
 and prints the recorded skills.
+
+When mining multiple repository paths, source references in `SKILL.md`
+use full commit IDs. Repository paths are not embedded in the artifacts.
 
 | Exit code | Meaning |
 |---|---|
@@ -247,7 +253,7 @@ it emits files for the owner to review and adopt.
 ## 9. Roadmap (post-v0.1)
 
 - v0.1.x: plugin/hook distribution; event-driven invalidation.
-- v0.2: cross-repository mining; `verify` subcommand (replay a skill
+- v0.2: cross-repository mining (implemented); `verify` subcommand (replay a skill
   against its source commits); tree-sitter AST diffs (line diffs break
   under identifier renames and code motion — review H-1); optional,
   explicitly-labeled local-LLM description refinement (the deterministic
