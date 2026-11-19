@@ -52,7 +52,10 @@ fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
             stderr.trim()
         ));
     }
-    String::from_utf8(output.stdout).map_err(|_| "git output was not valid UTF-8".to_string())
+    // Diffs carry file content in whatever encoding the file used (Latin-1,
+    // Shift_JIS, ...). Decode lossily (invalid bytes -> U+FFFD) so one legacy
+    // file cannot abort mining the whole history; the mapping is deterministic.
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Raw commit metadata before diff parsing.
