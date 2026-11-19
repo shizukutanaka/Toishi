@@ -178,6 +178,120 @@ fn mines_a_skill_and_is_deterministic() {
 }
 
 #[test]
+fn mines_across_repositories_without_counting_shared_history_twice() {
+    let base = temp_dir("cross-repo");
+    let repo = base.join("repo");
+    build_pattern_repo(&repo);
+    let second = base.join("second");
+    git(
+        &base,
+        &[
+            "clone",
+            "-q",
+            repo.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ],
+        "2026-01-05T00:00:00Z",
+    );
+    let overlap = base.join("overlap");
+    let result = run_mine(
+        &repo,
+        &overlap,
+        &[
+            "--repo",
+            repo.to_str().unwrap(),
+            "--repo",
+            second.to_str().unwrap(),
+            "--support",
+            "4",
+        ],
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        fs::read_to_string(overlap.join("registry.jsonl")).unwrap(),
+        ""
+    );
+
+    let commit = |dir: &Path, subject: &str, date: &str| {
+        git(
+            dir,
+            &[
+                "-c",
+                "user.email=dev@example.com",
+                "-c",
+                "user.name=Dev",
+                "commit",
+                "-qm",
+                subject,
+            ],
+            date,
+        );
+    };
+    for (dir, name, mode) in [(&repo, "d.cfg", "delta"), (&second, "e.cfg", "echo")] {
+        write(
+            dir,
+            name,
+            &format!("timeout = 10\nretries = 1\nmode = {mode}\n"),
+        );
+        git(dir, &["add", name], "2026-01-05T00:00:00Z");
+        commit(dir, "chore: add another fixture", "2026-01-05T00:00:00Z");
+        write(
+            dir,
+            name,
+            &format!("timeout = 20\nretries = 2\nmode = {mode}-v2\n"),
+        );
+        git(dir, &["add", name], "2026-01-06T00:00:00Z");
+        commit(
+            dir,
+            "fix: raise timeout and retries",
+            "2026-01-06T00:00:00Z",
+        );
+    }
+
+    // Each diverged history is below the support threshold on its own.
+    let out = base.join("combined");
+    let result = run_mine(
+        &repo,
+        &out,
+        &["--repo", second.to_str().unwrap(), "--support", "5"],
+    );
+    assert!(result.status.success(), "{result:?}");
+    let skill = fs::read_to_string(out.join("raise-timeout-and-retries/SKILL.md")).unwrap();
+    assert!(skill.contains("Support: 5 commits"), "{skill}");
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&second)
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap();
+    assert!(skill.contains(&format!("`{}`", head.trim())), "{skill}");
+    assert!(!skill.contains(&*base.to_string_lossy()), "{skill}");
+    let reverse = base.join("reverse");
+    let result = run_mine(
+        &second,
+        &reverse,
+        &["--repo", repo.to_str().unwrap(), "--support", "5"],
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(read_tree(&out), read_tree(&reverse));
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
+fn bad_repository_fails_combined_mining_without_writing_outputs() {
+    let base = temp_dir("cross-repo-invalid");
+    let repo = base.join("repo");
+    build_pattern_repo(&repo);
+    let out = base.join("combined");
+    let missing = base.join("z-missing");
+    let result = run_mine(&repo, &out, &["--repo", missing.to_str().unwrap()]);
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
+    assert!(String::from_utf8_lossy(&result.stderr).contains("z-missing"));
+    assert!(!out.exists());
+    fs::remove_dir_all(&base).ok();
+}
+
+#[test]
 fn zero_skills_is_success_with_reason() {
     let base = temp_dir("empty");
     let repo = base.join("repo");

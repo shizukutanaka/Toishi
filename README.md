@@ -55,6 +55,9 @@ metadata, and the binary talks only to your local repositories.
 # Mine a repository (default: patterns need >= 3 commits)
 toishi mine --repo <path> [--out <dir>] [--support <n>]
 
+# Pool recurring changes across explicitly selected local repositories
+toishi mine --repo ~/src/app-one --repo ~/src/app-two --out ./toishi-out
+
 # Show what was mined
 toishi list [--out <dir>]
 ```
@@ -74,6 +77,12 @@ commits' imperative subjects, identifiers in the diff, and a path
 glob), a normalized representative diff — string/number literals become
 `⟨S⟩`/`⟨N⟩`, secret-looking tokens become `⟨R⟩` — and its source
 commits, so every skill is auditable back to the history it came from.
+
+Combined mining counts each Git commit ID only once, so shared history and
+duplicate checkouts do not inflate support. Combined skills show full commit
+IDs instead of shortened IDs, without embedding local repository paths.
+Reordering the same inputs produces identical artifacts. Select only
+repositories whose change patterns you intend to combine and review together.
 
 ### Zero skills is a valid result
 
@@ -123,8 +132,8 @@ found 18 distinct change patterns; 0 met support >= 3
 ## Limitations
 
 - **Sparse histories yield few or zero skills.** This is expected on
-  small repositories; lower `--support` or wait for history to accrue.
-  Cross-repository mining is planned (v0.2).
+  small repositories; combine compatible local repositories, lower
+  `--support`, or wait for history to accrue.
 - **Line diffs, not ASTs.** Renamed identifiers and moved code can
   split a pattern. tree-sitter AST diffing is planned (v0.2).
 - **Classification is heuristic** outside Conventional Commits repos
@@ -136,7 +145,7 @@ found 18 distinct change patterns; 0 met support >= 3
 
 - **v0.1.x** — Claude Code plugin + PostToolUse/Stop hook distribution;
   event-driven staleness (dependency major bumps).
-- **v0.2** — cross-repository mining; `verify` subcommand; tree-sitter
+- **v0.2** — cross-repository mining (implemented); `verify` subcommand; tree-sitter
   AST diffs; optional, explicitly-labeled local-LLM description
   refinement (deterministic core remains the default).
 
