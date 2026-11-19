@@ -25,6 +25,9 @@ const CONFIG_PINS: [(&str, &str); 4] = [
 fn git_command(repo: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("LC_ALL", "C")
         .env("GIT_PAGER", "cat")
         .env("PAGER", "cat");
@@ -64,6 +67,10 @@ fn list_commits(repo: &Path) -> Result<Vec<CommitMeta>, String> {
     // %x1e (record separator) starts each record; %x1f (unit separator)
     // delimits fields. Subjects cannot contain these control characters.
     let out = run_git(repo, &["log", "--format=%x1e%H%x1f%ct%x1f%s"])?;
+    Ok(parse_metadata(&out))
+}
+
+fn parse_metadata(out: &str) -> Vec<CommitMeta> {
     let mut metas = Vec::new();
     for record in out.split('\u{1e}') {
         let record = record.trim_matches('\n');
@@ -83,7 +90,7 @@ fn list_commits(repo: &Path) -> Result<Vec<CommitMeta>, String> {
             subject,
         });
     }
-    Ok(metas)
+    metas
 }
 
 /// Parse the unified diff of a single commit (`git show -U0`).
@@ -96,7 +103,9 @@ fn commit_diff(repo: &Path, hash: &str) -> Result<Vec<DiffLine>, String> {
             "-U0",
             "--no-color",
             "--no-ext-diff",
+            "--no-textconv",
             hash,
+            "--",
         ],
     )?;
     Ok(parse_diff(&out))
@@ -162,23 +171,62 @@ pub fn collect(repo: &Path) -> Result<Vec<Commit>, String> {
         ));
     }
     let metas = list_commits(repo)?;
-    let mut commits = Vec::with_capacity(metas.len());
-    for meta in metas {
-        let category = crate::classify::classify(&meta.subject);
-        let lines = if category.is_mineable() {
-            commit_diff(repo, &meta.hash)?
-        } else {
-            Vec::new()
-        };
-        commits.push(Commit {
-            hash: meta.hash,
-            timestamp: meta.timestamp,
-            subject: meta.subject,
-            category,
-            lines,
-        });
+    metas
+        .into_iter()
+        .map(|meta| read_commit(repo, meta))
+        .collect()
+}
+
+fn read_commit(repo: &Path, meta: CommitMeta) -> Result<Commit, String> {
+    let category = crate::classify::classify(&meta.subject);
+    let lines = if category.is_mineable() {
+        commit_diff(repo, &meta.hash)?
+    } else {
+        Vec::new()
+    };
+    Ok(Commit {
+        hash: meta.hash,
+        timestamp: meta.timestamp,
+        subject: meta.subject,
+        category,
+        lines,
+    })
+}
+
+pub fn check_repository(repo: &Path) -> Result<(), String> {
+    run_git(repo, &["rev-parse", "--git-dir"]).map(|_| ())
+}
+
+pub fn collect_source(repo: &Path, id: &str) -> Result<Option<Commit>, String> {
+    if !matches!(id.len(), 40 | 64) || !id.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err("invalid source commit ID".to_string());
     }
-    Ok(commits)
+    let revision = format!("{id}^{{commit}}");
+    let result = git_command(repo)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &revision,
+        ])
+        .output()
+        .map_err(|e| format!("failed to execute git: {e}"))?;
+    match result.status.code() {
+        Some(1) => return Ok(None),
+        Some(0) if result.stdout.strip_suffix(b"\n") == Some(id.as_bytes()) => {}
+        Some(0) => return Ok(None),
+        _ => return Err("git rev-parse failed while resolving a source commit".to_string()),
+    }
+    let output = run_git(
+        repo,
+        &["show", "-s", "--format=%x1e%H%x1f%ct%x1f%s", id, "--"],
+    )?;
+    let meta = parse_metadata(&output)
+        .into_iter()
+        .find(|meta| meta.hash == id)
+        .ok_or("git returned no metadata for a source commit")?;
+    read_commit(repo, meta).map(Some)
 }
 
 #[cfg(test)]

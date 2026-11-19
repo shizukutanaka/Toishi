@@ -12,7 +12,7 @@
 //! The draft then passes the security gate: if the blocklist matches any
 //! member subject, representative line, or the generated text itself, the
 //! candidate is rejected and the reason is recorded. Surviving skills are
-//! written as `<out>/<name>/SKILL.md` plus one `registry.jsonl` record
+//! written as `<out>/<name>/SKILL.md`, a source manifest, and one `registry.jsonl` record
 //! each; rejections go to `rejected.jsonl`.
 //!
 //! Confidence (spec §3): the initial value is the documented, deterministic
@@ -32,6 +32,9 @@ pub const MAX_NAME_LEN: usize = 64;
 pub const MAX_DESCRIPTION_LEN: usize = 200;
 /// Maximum number of lines in a SKILL.md body (after the frontmatter).
 pub const MAX_BODY_LINES: usize = 40;
+pub const SOURCES_FILE: &str = "sources.txt";
+pub const SOURCES_SHORT: &str = "toishi-sources-v1 short";
+pub const SOURCES_FULL: &str = "toishi-sources-v1 full";
 
 /// Initial confidence for a skill with the given support:
 /// `support / (support + 2)` — 0.5 at support 2, 0.6 at 3, 0.8 at 8,
@@ -49,6 +52,7 @@ pub struct SkillFile {
     pub confidence: f64,
     pub stability: f64,
     pub last_verified: String,
+    pub sources: String,
 }
 
 /// A candidate rejected by the security gate, with the reason.
@@ -412,6 +416,28 @@ fn gate_check(
     None
 }
 
+fn render_skill(name: &str, draft: &Draft) -> String {
+    format!(
+        "---\nname: {}\ndescription: {}\n---\n\n{}",
+        name, draft.description, draft.body
+    )
+}
+
+pub fn replay_skill(
+    name: &str,
+    cluster: &Cluster,
+    commits: &[Commit],
+    patterns: &[CommitPattern],
+    full_source_ids: bool,
+) -> Result<String, String> {
+    let patterns_by_commit = patterns.iter().map(|p| (p.commit_index, p)).collect();
+    let draft = build_draft(cluster, commits, &patterns_by_commit, full_source_ids);
+    if let Some(reason) = gate_check(&draft, cluster, commits, &patterns_by_commit) {
+        return Err(reason);
+    }
+    Ok(render_skill(name, &draft))
+}
+
 /// Build all skills from candidate clusters, applying the gate and
 /// resolving name collisions deterministically.
 pub fn build_skills(
@@ -448,16 +474,26 @@ pub fn build_skills(
         used_names.push(name.clone());
 
         let confidence = initial_confidence(draft.support);
-        let content = format!(
-            "---\nname: {}\ndescription: {}\n---\n\n{}",
-            name, draft.description, draft.body
-        );
+        let content = render_skill(&name, &draft);
+        let mut ids: Vec<_> = cluster
+            .members
+            .iter()
+            .map(|&i| commits[i].hash.as_str())
+            .collect();
+        ids.sort_unstable();
+        let format = if full_source_ids {
+            SOURCES_FULL
+        } else {
+            SOURCES_SHORT
+        };
+        let sources = format!("{format}\n{}\n", ids.join("\n"));
         skills.push(SkillFile {
             name,
             content,
             confidence,
             stability: confidence,
             last_verified: draft.last_verified.clone(),
+            sources,
         });
     }
     (skills, rejections)
@@ -506,6 +542,8 @@ pub fn write_outputs(
             .map_err(|e| format!("cannot create skill dir {}: {e}", dir.display()))?;
         fs::write(dir.join("SKILL.md"), &skill.content)
             .map_err(|e| format!("cannot write SKILL.md for {}: {e}", skill.name))?;
+        fs::write(dir.join(SOURCES_FILE), &skill.sources)
+            .map_err(|e| format!("cannot write {SOURCES_FILE} for {}: {e}", skill.name))?;
     }
     let mut registry = String::new();
     for skill in &sorted {
@@ -750,6 +788,7 @@ mod tests {
             confidence: 0.6,
             stability: 0.6,
             last_verified: "2026-01-01".to_string(),
+            sources: String::new(),
         };
         let line = registry_line(&skill);
         let entries = parse_registry(&line);

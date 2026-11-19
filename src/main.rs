@@ -3,6 +3,7 @@
 //! Subcommands:
 //! - `toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]`
 //! - `toishi list [--out <dir>]`
+//! - `toishi verify <skill> --repo <path> [--repo <path> ...] [--out <dir>]`
 //!
 //! Exit codes (spec §5):
 //! - 0: success — including a zero-skill result, which is a first-class
@@ -19,6 +20,8 @@ use toishi::classify::Category;
 use toishi::cluster::{self, DEFAULT_SUPPORT};
 use toishi::{collect, emit, normalize, sanitize, Commit, CommitPattern, NormLine};
 
+mod verify;
+
 const DEFAULT_OUT: &str = "toishi-out";
 
 const USAGE: &str = "\
@@ -27,16 +30,18 @@ Toishi — mine verified human git commits into Agent Skills.
 USAGE:
     toishi mine --repo <path> [--repo <path> ...] [--out <dir>] [--support <n>]
     toishi list [--out <dir>]
+    toishi verify <skill> --repo <path> [--repo <path> ...] [--out <dir>]
     toishi --help
 
 COMMANDS:
     mine    Mine local repositories and emit SKILL.md files + registry.jsonl.
     list    Show the skills recorded in <out>/registry.jsonl.
+    verify  Rebuild a skill from its recorded source commits without writing files.
 
 OPTIONS:
-    --repo <path>    Local repository to mine (required for `mine`, repeatable).
+    --repo <path>    Local repository for mine or verify (required, repeatable).
     --out <dir>      Output directory (default: toishi-out).
-    --support <n>    Minimum commits per pattern (default: 3).
+    --support <n>    Minimum commits per pattern for mine (default: 3).
 
 EXIT CODES:
     0  success (a zero-skill result is success, with the reason reported)
@@ -63,6 +68,7 @@ fn run(args: &[String]) -> u8 {
         }
         "mine" => cmd_mine(&args[1..]),
         "list" => cmd_list(&args[1..]),
+        "verify" => verify::run(&args[1..]),
         other => {
             eprintln!("error: unknown command '{other}'\n\n{USAGE}");
             2
@@ -77,7 +83,7 @@ struct Options {
     support: usize,
 }
 
-fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
+fn parse_options(args: &[String], command: &str) -> Result<Options, String> {
     let mut opts = Options {
         repos: BTreeSet::new(),
         out: PathBuf::from(DEFAULT_OUT),
@@ -96,7 +102,7 @@ fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
                 let value = args.get(i).ok_or("--out requires a value")?;
                 opts.out = PathBuf::from(value);
             }
-            "--support" => {
+            "--support" if command != "verify" => {
                 i += 1;
                 let value = args.get(i).ok_or("--support requires a value")?;
                 let n: usize = value
@@ -111,14 +117,14 @@ fn parse_options(args: &[String], need_repo: bool) -> Result<Options, String> {
         }
         i += 1;
     }
-    if need_repo && opts.repos.is_empty() {
-        return Err("--repo is required for `mine`".to_string());
+    if command != "list" && opts.repos.is_empty() {
+        return Err(format!("--repo is required for `{command}`"));
     }
     Ok(opts)
 }
 
 fn cmd_mine(args: &[String]) -> u8 {
-    let opts = match parse_options(args, true) {
+    let opts = match parse_options(args, "mine") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("error: {e}\n\n{USAGE}");
@@ -134,18 +140,8 @@ fn cmd_mine(args: &[String]) -> u8 {
     }
 }
 
-/// The mining pipeline. Returns the process exit code.
-fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, String> {
-    let mut unique = BTreeMap::<String, Commit>::new();
-    for repo in repos {
-        let history = collect::collect(repo).map_err(|err| format!("{}: {err}", repo.display()))?;
-        for commit in history {
-            unique.entry(commit.hash.clone()).or_insert(commit);
-        }
-    }
-    let commits: Vec<Commit> = unique.into_values().collect();
-    let total = commits.len();
-    let mineable: Vec<usize> = commits
+fn normalize_patterns(commits: &[Commit]) -> (Vec<CommitPattern>, usize) {
+    let mut order: Vec<usize> = commits
         .iter()
         .enumerate()
         .filter(|(_, c)| c.category.is_mineable())
@@ -155,7 +151,6 @@ fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, Str
     // sanitize -> normalize -> fingerprint, per mineable commit.
     // Commits are processed in ascending hash order so that clustering is
     // independent of git log's traversal order.
-    let mut order: Vec<usize> = mineable.clone();
     order.sort_by(|&a, &b| commits[a].hash.cmp(&commits[b].hash));
     let mut patterns: Vec<CommitPattern> = Vec::new();
     let mut redacted_lines = 0usize;
@@ -186,6 +181,21 @@ fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, Str
             lines,
         });
     }
+    (patterns, redacted_lines)
+}
+
+/// The mining pipeline. Returns the process exit code.
+fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, String> {
+    let mut unique = BTreeMap::<String, Commit>::new();
+    for repo in repos {
+        let history = collect::collect(repo).map_err(|err| format!("{}: {err}", repo.display()))?;
+        for commit in history {
+            unique.entry(commit.hash.clone()).or_insert(commit);
+        }
+    }
+    let commits: Vec<Commit> = unique.into_values().collect();
+    let total = commits.len();
+    let (patterns, redacted_lines) = normalize_patterns(&commits);
 
     let clusters = cluster::cluster(&patterns);
     let cands = cluster::candidates(&clusters, support);
@@ -240,7 +250,7 @@ fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, Str
         // Zero skills is a first-class result: explain why.
         let largest = clusters.iter().map(|c| c.support()).max().unwrap_or(0);
         println!("0 skills emitted (not an error):");
-        if mineable.is_empty() {
+        if patterns.is_empty() {
             println!(
                 "  reason: no fix/feat commits were found in {total} commits; \
                  Toishi mines verified fix/feature changes only"
@@ -248,7 +258,7 @@ fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, Str
         } else if largest == 0 {
             println!(
                 "  reason: {} fix/feat commits had no parseable diff lines",
-                mineable.len()
+                patterns.len()
             );
         } else {
             println!(
@@ -271,7 +281,7 @@ fn mine(repos: &BTreeSet<PathBuf>, out: &Path, support: usize) -> Result<u8, Str
 }
 
 fn cmd_list(args: &[String]) -> u8 {
-    let opts = match parse_options(args, false) {
+    let opts = match parse_options(args, "list") {
         Ok(o) => o,
         Err(e) => {
             eprintln!("error: {e}\n\n{USAGE}");
